@@ -5,43 +5,36 @@ This Python script attempts to delete the AWS default VPC in each region.
 **Requirements:**
 
 * Tested with:
-   * Python version: 3.10.8
-   * Boto3 version: 1.26.4
-   * Botocore version: 1.29.4
+   * Python version: 3.13+
+   * Boto3 version: 1.40.55
+   * Botocore version: 1.40.55
 * Valid AWS API keys/profile
-
-**Setup:**
-
-Update with your AWS profile / credentials.
-
-```
-main(profile = '<YOUR_PROFILE>')
-```
 
 **Usage:**
 
 ```
-python remove_vpc.py
+python -m venv venv
+source venv/bin/acttivate
+pip3 install -r requirements.txt
+python remove_vpc.py --profile <YOUR_PROFILE> --dry-run
 ```
 
 **Output:**
 
 ```
-VPC vpc-0b43a362 has been deleted from the ap-south-1 region.
-VPC vpc-b22dd5db has been deleted from the eu-west-3 region.
-VPC vpc-74b7551d has been deleted from the eu-west-2 region.
-VPC vpc-3f71855a has been deleted from the eu-west-1 region.
-VPC vpc-d58e6cbc has been deleted from the ap-northeast-2 region.
-VPC (default) was not found in the ap-northeast-1 region.
-VPC vpc-4053e625 has been deleted from the sa-east-1 region.
-VPC vpc-4c06ea25 has been deleted from the ca-central-1 region.
-VPC vpc-7b80631e has been deleted from the ap-southeast-1 region.
-VPC vpc-41db3924 has been deleted from the ap-southeast-2 region.
-VPC vpc-47ea0b2e has been deleted from the eu-central-1 region.
-VPC vpc-1c558e79 has existing resources in the us-east-1 region.
-VPC (default) was not found in the us-east-2 region.
-VPC (default) was not found in the us-west-1 region.
-VPC vpc-1839c57d has existing resources in the us-west-2 region.
+[INFO] Processing default VPC vpc-045dcf7b88fb99834 in ap-south-1 (dry-run=True)
+[INFO] Detaching and deleting IGW igw-0a775ec844ec3415b from vpc-045dcf7b88fb99834
+[SUCCESS] Dry-run successful (no changes made)
+[SUCCESS] Dry-run successful (no changes made)
+[INFO] Deleting subnet subnet-0fa0d46c02cff2fc3
+[SUCCESS] Dry-run successful (no changes made)
+[INFO] Deleting subnet subnet-051936b98efe38c8e
+[SUCCESS] Dry-run successful (no changes made)
+[INFO] Deleting subnet subnet-053f6e337da300b8a
+[SUCCESS] Dry-run successful (no changes made)
+[INFO] Deleting VPC vpc-045dcf7b88fb99834 in region ap-south-1
+[SUCCESS] Dry-run successful (no changes made)
+...
 ```
 
 **References:**
