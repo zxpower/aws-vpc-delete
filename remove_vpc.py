@@ -1,256 +1,148 @@
+#!/usr/bin/env python3
 """
+Remove those pesky AWS default VPCs (safely, with dry-run support).
 
-Remove those pesky AWS default VPCs.
-
-Python Version: 3.10.8
-Boto3 Version: 1.26.40
-
+Usage:
+    python delete_default_vpcs.py --profile myawsprofile --dry-run
+    python delete_default_vpcs.py --profile myawsprofile
 """
 
 import boto3
+import argparse
 from botocore.exceptions import ClientError
 
 
-def delete_igw(ec2, vpc_id):
-  """
-  Detach and delete the internet gateway
-  """
+def log(msg, level="INFO"):
+    """Simple colored log output."""
+    colors = {
+        "INFO": "\033[94m",    # Blue
+        "WARN": "\033[93m",    # Yellow
+        "ERROR": "\033[91m",   # Red
+        "SUCCESS": "\033[92m", # Green
+    }
+    reset = "\033[0m"
+    print(f"{colors.get(level, '')}[{level}] {msg}{reset}")
 
-  args = {
-    'Filters' : [
-      {
-        'Name' : 'attachment.vpc-id',
-        'Values' : [ vpc_id ]
-      }
-    ]
-  }
 
-  try:
-    igw = ec2.describe_internet_gateways(**args)['InternetGateways']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  if igw:
-    igw_id = igw[0]['InternetGatewayId']
-
+def safe_call(func, **kwargs):
+    """Call boto3 function safely and print meaningful errors."""
     try:
-      result = ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+        return func(**kwargs)
     except ClientError as e:
-      print(e.response['Error']['Message'])
-
-    try:
-      result = ec2.delete_internet_gateway(InternetGatewayId=igw_id)
-    except ClientError as e:
-      print(e.response['Error']['Message'])
-
-  return
+        if e.response['Error']['Code'] == 'DryRunOperation':
+            log("Dry-run successful (no changes made)", "SUCCESS")
+        else:
+            log(e.response['Error']['Message'], "ERROR")
 
 
-def delete_subs(ec2, args):
-  """
-  Delete the subnets
-  """
+def delete_igw(ec2, vpc_id, dry_run=False):
+    """Detach and delete Internet Gateway."""
+    igws = ec2.describe_internet_gateways(
+        Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}]
+    ).get('InternetGateways', [])
 
-  try:
-    subs = ec2.describe_subnets(**args)['Subnets']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
+    for igw in igws:
+        igw_id = igw['InternetGatewayId']
+        log(f"Detaching and deleting IGW {igw_id} from {vpc_id}")
+        safe_call(ec2.detach_internet_gateway, InternetGatewayId=igw_id, VpcId=vpc_id, DryRun=dry_run)
+        safe_call(ec2.delete_internet_gateway, InternetGatewayId=igw_id, DryRun=dry_run)
 
-  if subs:
+
+def delete_subnets(ec2, vpc_id, dry_run=False):
+    """Delete subnets."""
+    subs = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]).get('Subnets', [])
     for sub in subs:
-      sub_id = sub['SubnetId']
-
-      try:
-        result = ec2.delete_subnet(SubnetId=sub_id)
-      except ClientError as e:
-        print(e.response['Error']['Message'])
-
-  return
+        log(f"Deleting subnet {sub['SubnetId']}")
+        safe_call(ec2.delete_subnet, SubnetId=sub['SubnetId'], DryRun=dry_run)
 
 
-def delete_rtbs(ec2, args):
-  """
-  Delete the route tables
-  """
-
-  try:
-    rtbs = ec2.describe_route_tables(**args)['RouteTables']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  if rtbs:
+def delete_route_tables(ec2, vpc_id, dry_run=False):
+    """Delete non-main route tables."""
+    rtbs = ec2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]).get('RouteTables', [])
     for rtb in rtbs:
-      main = 'false'
-      for assoc in rtb['Associations']:
-        main = assoc['Main']
-      if main == True:
-        continue
-      rtb_id = rtb['RouteTableId']
-        
-      try:
-        result = ec2.delete_route_table(RouteTableId=rtb_id)
-      except ClientError as e:
-        print(e.response['Error']['Message'])
-
-  return
+        if any(assoc.get('Main') for assoc in rtb.get('Associations', [])):
+            continue
+        log(f"Deleting route table {rtb['RouteTableId']}")
+        safe_call(ec2.delete_route_table, RouteTableId=rtb['RouteTableId'], DryRun=dry_run)
 
 
-def delete_acls(ec2, args):
-  """
-  Delete the network access lists (NACLs)
-  """
-
-  try:
-    acls = ec2.describe_network_acls(**args)['NetworkAcls']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  if acls:
+def delete_acls(ec2, vpc_id, dry_run=False):
+    """Delete non-default network ACLs."""
+    acls = ec2.describe_network_acls(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]).get('NetworkAcls', [])
     for acl in acls:
-      default = acl['IsDefault']
-      if default == True:
-        continue
-      acl_id = acl['NetworkAclId']
-
-      try:
-        result = ec2.delete_network_acl(NetworkAclId=acl_id)
-      except ClientError as e:
-        print(e.response['Error']['Message'])
-
-  return
+        if acl['IsDefault']:
+            continue
+        log(f"Deleting network ACL {acl['NetworkAclId']}")
+        safe_call(ec2.delete_network_acl, NetworkAclId=acl['NetworkAclId'], DryRun=dry_run)
 
 
-def delete_sgps(ec2, args):
-  """
-  Delete any security groups
-  """
-
-  try:
-    sgps = ec2.describe_security_groups(**args)['SecurityGroups']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  if sgps:
-    for sgp in sgps:
-      default = sgp['GroupName']
-      if default == 'default':
-        continue
-      sg_id = sgp['GroupId']
-
-      try:
-        result = ec2.delete_security_group(GroupId=sg_id)
-      except ClientError as e:
-        print(e.response['Error']['Message'])
-
-  return
+def delete_security_groups(ec2, vpc_id, dry_run=False):
+    """Delete non-default security groups."""
+    sgps = ec2.describe_security_groups(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]).get('SecurityGroups', [])
+    for sg in sgps:
+        if sg['GroupName'] == 'default':
+            continue
+        log(f"Deleting security group {sg['GroupId']} ({sg['GroupName']})")
+        safe_call(ec2.delete_security_group, GroupId=sg['GroupId'], DryRun=dry_run)
 
 
-def delete_vpc(ec2, vpc_id, region):
-  """
-  Delete the VPC
-  """
-
-  try:
-    result = ec2.delete_vpc(VpcId=vpc_id)
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  else:
-    print('VPC {} has been deleted from the {} region.'.format(vpc_id, region))
-
-  return
+def delete_vpc(ec2, vpc_id, region, dry_run=False):
+    """Delete the VPC."""
+    log(f"Deleting VPC {vpc_id} in region {region}")
+    safe_call(ec2.delete_vpc, VpcId=vpc_id, DryRun=dry_run)
+    if not dry_run:
+        log(f"VPC {vpc_id} deleted from {region}", "SUCCESS")
 
 
-def get_regions(ec2):
-  """
-  Return all AWS regions
-  """
-
-  regions = []
-
-  try:
-    aws_regions = ec2.describe_regions()['Regions']
-  except ClientError as e:
-    print(e.response['Error']['Message'])
-
-  else:
-    for region in aws_regions:
-      regions.append(region['RegionName'])
-
-  return regions
+def get_regions(session):
+    """Return all AWS regions."""
+    ec2 = session.client('ec2', region_name='us-east-1')
+    return [r['RegionName'] for r in ec2.describe_regions()['Regions']]
 
 
-def main(profile):
-  """
-  Do the work..
+def has_attached_resources(ec2, vpc_id):
+    """Check if the VPC still has resources."""
+    eni = ec2.describe_network_interfaces(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]).get('NetworkInterfaces', [])
+    return len(eni) > 0
 
-  Order of operation:
 
-  1.) Delete the internet gateway
-  2.) Delete subnets
-  3.) Delete route tables
-  4.) Delete network access lists
-  5.) Delete security groups
-  6.) Delete the VPC 
-  """
-
-  # AWS Credentials
-  # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html
-
-  session = boto3.Session(profile_name=profile)
-  ec2 = session.client('ec2', region_name='us-east-1')
-
-  regions = get_regions(ec2)
-
-  for region in regions:
-
+def process_region(session, region, dry_run=False):
+    """Handle cleanup in one region."""
     ec2 = session.client('ec2', region_name=region)
-
-    try:
-      attribs = ec2.describe_account_attributes(AttributeNames=[ 'default-vpc' ])['AccountAttributes']
-    except ClientError as e:
-      print(e.response['Error']['Message'])
-      return
-
-    else:
-      vpc_id = attribs[0]['AttributeValues'][0]['AttributeValue']
+    attribs = ec2.describe_account_attributes(AttributeNames=['default-vpc'])['AccountAttributes']
+    vpc_id = attribs[0]['AttributeValues'][0]['AttributeValue']
 
     if vpc_id == 'none':
-      print('VPC (default) was not found in the {} region.'.format(region))
-      continue
+        log(f"No default VPC in region {region}", "WARN")
+        return
 
-    # Are there any existing resources?  Since most resources attach an ENI, let's check..
+    if has_attached_resources(ec2, vpc_id):
+        log(f"VPC {vpc_id} has existing resources in {region}. Skipping.", "WARN")
+        return
 
-    args = {
-      'Filters' : [
-        {
-          'Name' : 'vpc-id',
-          'Values' : [ vpc_id ]
-        }
-      ]
-    }
+    log(f"Processing default VPC {vpc_id} in {region} (dry-run={dry_run})")
+    delete_igw(ec2, vpc_id, dry_run)
+    delete_subnets(ec2, vpc_id, dry_run)
+    delete_route_tables(ec2, vpc_id, dry_run)
+    delete_acls(ec2, vpc_id, dry_run)
+    delete_security_groups(ec2, vpc_id, dry_run)
+    delete_vpc(ec2, vpc_id, region, dry_run)
 
-    try:
-      eni = ec2.describe_network_interfaces(**args)['NetworkInterfaces']
-    except ClientError as e:
-      print(e.response['Error']['Message'])
-      return
 
-    if eni:
-      print('VPC {} has existing resources in the {} region.'.format(vpc_id, region))
-      continue
+def main(profile, dry_run):
+    """Main execution flow."""
+    session = boto3.Session(profile_name=profile)
+    regions = get_regions(session)
 
-    result = delete_igw(ec2, vpc_id)
-    result = delete_subs(ec2, args)
-    result = delete_rtbs(ec2, args)
-    result = delete_acls(ec2, args)
-    result = delete_sgps(ec2, args)
-    result = delete_vpc(ec2, vpc_id, region)
-
-  return
+    for region in regions:
+        process_region(session, region, dry_run)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Delete AWS default VPCs safely (with dry-run option).")
+    parser.add_argument("--profile", required=True, help="AWS CLI profile name")
+    parser.add_argument("--dry-run", action="store_true", help="Preview actions without deleting anything")
+    args = parser.parse_args()
 
-  main(profile = '<YOUR_PROFILE>')
+    main(profile=args.profile, dry_run=args.dry_run)
 
